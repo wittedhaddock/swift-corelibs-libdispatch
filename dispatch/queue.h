@@ -442,6 +442,13 @@ DISPATCH_EXPORT
 struct dispatch_queue_attr_s _dispatch_queue_attr_concurrent;
 
 /*!
+ * Add a temporary API to access DISPATCH_QUEUE_CONCURRENT from
+ * Swift code which can't handle complex macros today.
+ */
+DISPATCH_EXPORT DISPATCH_CONST
+dispatch_queue_attr_t
+get_dispatch_queue_concurrent();
+/*!
  * @function dispatch_queue_attr_make_with_qos_class
  *
  * @abstract

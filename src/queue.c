@@ -4598,3 +4598,12 @@ _dispatch_queue_cleanup(void *ctxt)
 	// POSIX defines that destructors are only called if 'ctxt' is non-null
 	DISPATCH_CRASH("Premature thread exit while a dispatch queue is running");
 }
+
+/*
+ * Temporary API to provide access to DISPATCH_QUEUE_CONCURRENT from
+ * Swift code.
+ */
+dispatch_queue_attr_t
+get_dispatch_queue_concurrent(){
+	return DISPATCH_QUEUE_CONCURRENT;
+}
