@@ -990,6 +990,54 @@ DISPATCH_EXPORT DISPATCH_PURE DISPATCH_WARN_RESULT DISPATCH_NOTHROW
 void *
 dispatch_get_specific(const void *key);
 
+#if __linux__
+/*!
+ * @functiongroup Runloop integration APIs
+ * APIs to provide integration of the main queue into run loop implementations
+ * such as Swift Foundation.
+ */
+
+/*!
+ * @function dispatch_get_main_queue_eventfd_np
+ *
+ * @abstract
+ * Returns a file descriptor representing an eventfd object that provides a
+ * wait/notify mechanism to signal pending tasks on the main queue.
+ *
+ * @discussion
+ * The file descriptor can be monitored with epoll() and becomes readable when
+ * there are pending tasks on the queue. Once readable you should call
+ * eventfd_read() to acknowledge the notification and then call
+ * dispatch_main_queue_drain_np() to perform the pending tasks on the queue.
+ *
+ * @availability
+ * Linux only.
+ * 
+ * @result
+ * A file descriptor representing the eventfd object.
+ */
+DISPATCH_EXPORT DISPATCH_WARN_RESULT DISPATCH_NOTHROW
+int
+dispatch_get_main_queue_eventfd_np();
+
+/*!
+ * @function dispatch_main_queue_drain_np
+ *
+ * @abstract
+ * Executes pending tasks enqueued to the main queue.
+ *
+ * @availability
+ * Linux only.
+ * 
+ * @discussion
+ * The run loop should invoke this function to execute pending tasks on the
+ * main queue.
+ */
+DISPATCH_EXPORT DISPATCH_NOTHROW
+void
+dispatch_main_queue_drain_np();
+#endif
+
 __END_DECLS
 
 #endif

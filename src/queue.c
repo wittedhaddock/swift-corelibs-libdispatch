@@ -23,6 +23,11 @@
 #include "protocol.h"
 #endif
 
+#if __linux__
+#include <sys/eventfd.h>
+#define DISPATCH_LINUX_COMPAT 1
+#endif
+
 #if (!HAVE_PTHREAD_WORKQUEUES || DISPATCH_DEBUG) && \
 		!defined(DISPATCH_ENABLE_THREAD_POOL)
 #define DISPATCH_ENABLE_THREAD_POOL 1
@@ -77,10 +82,19 @@ static int _dispatch_pthread_sigmask(int how, sigset_t *set, sigset_t *oset);
 
 #if DISPATCH_COCOA_COMPAT
 static dispatch_once_t _dispatch_main_q_port_pred;
-static dispatch_queue_t _dispatch_main_queue_wakeup(void);
 unsigned long _dispatch_runloop_queue_wakeup(dispatch_queue_t dq);
 static void _dispatch_runloop_queue_port_init(void *ctxt);
 static void _dispatch_runloop_queue_port_dispose(dispatch_queue_t dq);
+#endif
+
+#if DISPATCH_COCOA_COMPAT || DISPATCH_LINUX_COMPAT
+static dispatch_queue_t _dispatch_main_queue_wakeup(void);
+#endif
+
+#if DISPATCH_LINUX_COMPAT
+static dispatch_once_t _dispatch_main_q_eventfd_pred;
+static void _dispatch_main_q_eventfd_init(void *ctxt);
+static int main_q_eventfd = -1;
 #endif
 
 static void _dispatch_root_queues_init(void *context);
@@ -3509,6 +3523,29 @@ _dispatch_main_queue_wakeup(void)
 }
 #endif
 
+#if DISPATCH_LINUX_COMPAT
+DISPATCH_NOINLINE
+static dispatch_queue_t
+_dispatch_main_queue_wakeup(void)
+{
+	dispatch_queue_t dq = &_dispatch_main_q;
+	f (!dq->dq_is_thread_bound) {
+		return NULL;
+	}
+	dispatch_once_f(&_dispatch_main_q_eventfd_pred, dq,
+			_dispatch_main_q_eventfd_init);
+	if (main_q_eventfd != -1) {
+		int result;
+		do {
+			result = eventfd_write(main_q_eventfd, 1);
+		} while (result == -1 && errno == EINTR);
+		(void)dispatch_assume_zero(result);
+	}
+	return NULL;
+}
+#endif
+
+
 DISPATCH_NOINLINE
 static void
 _dispatch_queue_wakeup_global_slow(dispatch_queue_t dq, unsigned int n)
@@ -3752,7 +3789,7 @@ out:
 	return sema;
 }
 
-#if DISPATCH_COCOA_COMPAT
+#if DISPATCH_COCOA_COMPAT || DISPATCH_LINUX_COMPAT
 static void
 _dispatch_main_queue_drain(void)
 {
@@ -4485,19 +4522,12 @@ _dispatch_runloop_queue_port_dispose(dispatch_queue_t dq)
 	DISPATCH_VERIFY_MIG(kr);
 	(void)dispatch_assume_zero(kr);
 }
+#endif
 
 #pragma mark -
 #pragma mark dispatch_main_queue
 
-mach_port_t
-_dispatch_get_main_queue_port_4CF(void)
-{
-	dispatch_queue_t dq = &_dispatch_main_q;
-	dispatch_once_f(&_dispatch_main_q_port_pred, dq,
-			_dispatch_runloop_queue_port_init);
-	return (mach_port_t)dq->do_ctxt;
-}
-
+#if DISPATCH_COCOA_COMPAT || DISPATCH_LINUX_COMPAT
 static bool main_q_is_draining;
 
 // 6618342 Contact the team that owns the Instrument DTrace probe before
@@ -4507,6 +4537,17 @@ static void
 _dispatch_queue_set_mainq_drain_state(bool arg)
 {
 	main_q_is_draining = arg;
+}
+#endif
+
+#if DISPATCH_COCOA_COMPAT
+mach_port_t
+_dispatch_get_main_queue_port_4CF(void)
+{
+	dispatch_queue_t dq = &_dispatch_main_q;
+	dispatch_once_f(&_dispatch_main_q_port_pred, dq,
+			_dispatch_runloop_queue_port_init);
+	return (mach_port_t)dq->do_ctxt;
 }
 
 void
@@ -4520,6 +4561,41 @@ _dispatch_main_queue_callback_4CF(mach_msg_header_t *msg DISPATCH_UNUSED)
 	_dispatch_queue_set_mainq_drain_state(false);
 }
 
+#endif
+
+#if DISPATCH_LINUX_COMPAT
+int
+dispatch_get_main_queue_eventfd_np()
+{
+	dispatch_once_f(&_dispatch_main_q_eventfd_pred, NULL,
+			_dispatch_main_q_eventfd_init);
+	return main_q_eventfd;
+}
+
+void
+dispatch_main_queue_drain_np()
+{
+	if (!pthread_main_np()) {
+		DISPATCH_CLIENT_CRASH("dispatch_main_queue_drain_np() must be called on "
+				"the main thread");
+	}
+
+	if (main_q_is_draining) {
+		return;
+	}
+	_dispatch_queue_set_mainq_drain_state(true);
+	_dispatch_main_queue_drain();
+	_dispatch_queue_set_mainq_drain_state(false);
+}
+
+static
+void _dispatch_main_q_eventfd_init(void *ctxt DISPATCH_UNUSED)
+{
+	_dispatch_safe_fork = false;
+	main_q_eventfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	(void)dispatch_assume(main_q_eventfd != -1);
+	_dispatch_program_is_probably_callback_driven = true;
+}
 #endif
 
 void
@@ -4585,6 +4661,16 @@ _dispatch_queue_cleanup2(void)
 	dispatch_once_f(&_dispatch_main_q_port_pred, dq,
 			_dispatch_runloop_queue_port_init);
 	_dispatch_runloop_queue_port_dispose(dq);
+#endif
+#if DISPATCH_LINUX_COMPAT
+	dispatch_once_f(&_dispatch_main_q_eventfd_pred, NULL,
+			_dispatch_main_q_eventfd_init);
+	int fd = main_q_eventfd;
+	main_q_eventfd = -1;
+
+	if (fd != -1) {
+		close(fd);
+	}
 #endif
 }
 
