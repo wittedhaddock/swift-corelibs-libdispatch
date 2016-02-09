@@ -23,11 +23,6 @@
 #include "protocol.h"
 #endif
 
-#if __linux__
-#include <sys/eventfd.h>
-#define DISPATCH_LINUX_COMPAT 1
-#endif
-
 #if (!HAVE_PTHREAD_WORKQUEUES || DISPATCH_DEBUG) && \
 		!defined(DISPATCH_ENABLE_THREAD_POOL)
 #define DISPATCH_ENABLE_THREAD_POOL 1
@@ -80,21 +75,18 @@ static void *_dispatch_worker_thread(void *context);
 static int _dispatch_pthread_sigmask(int how, sigset_t *set, sigset_t *oset);
 #endif
 
+#if DISPATCH_ENABLE_RUNLOOP_SUPPORT
+static dispatch_queue_t _dispatch_main_queue_wakeup(void);
 #if DISPATCH_COCOA_COMPAT
 static dispatch_once_t _dispatch_main_q_port_pred;
 unsigned long _dispatch_runloop_queue_wakeup(dispatch_queue_t dq);
 static void _dispatch_runloop_queue_port_init(void *ctxt);
 static void _dispatch_runloop_queue_port_dispose(dispatch_queue_t dq);
-#endif
-
-#if DISPATCH_COCOA_COMPAT || DISPATCH_LINUX_COMPAT
-static dispatch_queue_t _dispatch_main_queue_wakeup(void);
-#endif
-
-#if DISPATCH_LINUX_COMPAT
+#elif DISPATCH_LINUX_COMPAT
 static dispatch_once_t _dispatch_main_q_eventfd_pred;
 static void _dispatch_main_q_eventfd_init(void *ctxt);
 static int main_q_eventfd = -1;
+#endif
 #endif
 
 static void _dispatch_root_queues_init(void *context);
@@ -3480,6 +3472,7 @@ _dispatch_wakeup(dispatch_object_t dou)
 				// probe does
 }
 
+#if DISPATCH_ENABLE_RUNLOOP_SUPPORT
 #if DISPATCH_COCOA_COMPAT
 static inline void
 _dispatch_runloop_queue_wakeup_thread(dispatch_queue_t dq)
@@ -3507,6 +3500,7 @@ _dispatch_runloop_queue_wakeup(dispatch_queue_t dq)
 	_dispatch_runloop_queue_wakeup_thread(dq);
 	return false;
 }
+#endif
 
 DISPATCH_NOINLINE
 static dispatch_queue_t
@@ -3516,22 +3510,11 @@ _dispatch_main_queue_wakeup(void)
 	if (!dq->dq_is_thread_bound) {
 		return NULL;
 	}
+#if DISPATCH_COCOA_COMPAT
 	dispatch_once_f(&_dispatch_main_q_port_pred, dq,
 			_dispatch_runloop_queue_port_init);
 	_dispatch_runloop_queue_wakeup_thread(dq);
-	return NULL;
-}
-#endif
-
-#if DISPATCH_LINUX_COMPAT
-DISPATCH_NOINLINE
-static dispatch_queue_t
-_dispatch_main_queue_wakeup(void)
-{
-	dispatch_queue_t dq = &_dispatch_main_q;
-	f (!dq->dq_is_thread_bound) {
-		return NULL;
-	}
+#elif DISPATCH_LINUX_COMPAT
 	dispatch_once_f(&_dispatch_main_q_eventfd_pred, dq,
 			_dispatch_main_q_eventfd_init);
 	if (main_q_eventfd != -1) {
@@ -3541,10 +3524,10 @@ _dispatch_main_queue_wakeup(void)
 		} while (result == -1 && errno == EINTR);
 		(void)dispatch_assume_zero(result);
 	}
+#endif
 	return NULL;
 }
 #endif
-
 
 DISPATCH_NOINLINE
 static void
@@ -3789,7 +3772,7 @@ out:
 	return sema;
 }
 
-#if DISPATCH_COCOA_COMPAT || DISPATCH_LINUX_COMPAT
+#if DISPATCH_ENABLE_RUNLOOP_SUPPORT
 static void
 _dispatch_main_queue_drain(void)
 {
@@ -3840,6 +3823,7 @@ out:
 	_dispatch_force_cache_cleanup();
 }
 
+#if DISPATCH_COCOA_COMPAT
 static bool
 _dispatch_runloop_queue_drain_one(dispatch_queue_t dq)
 {
@@ -3867,6 +3851,7 @@ _dispatch_runloop_queue_drain_one(dispatch_queue_t dq)
 	_dispatch_force_cache_cleanup();
 	return next_dc;
 }
+#endif
 #endif
 
 DISPATCH_ALWAYS_INLINE_NDEBUG
@@ -4527,7 +4512,7 @@ _dispatch_runloop_queue_port_dispose(dispatch_queue_t dq)
 #pragma mark -
 #pragma mark dispatch_main_queue
 
-#if DISPATCH_COCOA_COMPAT || DISPATCH_LINUX_COMPAT
+#if DISPATCH_ENABLE_RUNLOOP_SUPPORT
 static bool main_q_is_draining;
 
 // 6618342 Contact the team that owns the Instrument DTrace probe before
@@ -4538,7 +4523,6 @@ _dispatch_queue_set_mainq_drain_state(bool arg)
 {
 	main_q_is_draining = arg;
 }
-#endif
 
 #if DISPATCH_COCOA_COMPAT
 mach_port_t
@@ -4561,11 +4545,9 @@ _dispatch_main_queue_callback_4CF(mach_msg_header_t *msg DISPATCH_UNUSED)
 	_dispatch_queue_set_mainq_drain_state(false);
 }
 
-#endif
-
-#if DISPATCH_LINUX_COMPAT
+#elif DISPATCH_LINUX_COMPAT
 int
-dispatch_get_main_queue_eventfd_np()
+dispatch_get_main_queue_eventfd_4CF()
 {
 	dispatch_once_f(&_dispatch_main_q_eventfd_pred, NULL,
 			_dispatch_main_q_eventfd_init);
@@ -4573,7 +4555,7 @@ dispatch_get_main_queue_eventfd_np()
 }
 
 void
-dispatch_main_queue_drain_np()
+dispatch_main_queue_drain_4CF()
 {
 	if (!pthread_main_np()) {
 		DISPATCH_CLIENT_CRASH("dispatch_main_queue_drain_np() must be called on "
@@ -4596,6 +4578,7 @@ void _dispatch_main_q_eventfd_init(void *ctxt DISPATCH_UNUSED)
 	(void)dispatch_assume(main_q_eventfd != -1);
 	_dispatch_program_is_probably_callback_driven = true;
 }
+#endif
 #endif
 
 void
@@ -4661,8 +4644,7 @@ _dispatch_queue_cleanup2(void)
 	dispatch_once_f(&_dispatch_main_q_port_pred, dq,
 			_dispatch_runloop_queue_port_init);
 	_dispatch_runloop_queue_port_dispose(dq);
-#endif
-#if DISPATCH_LINUX_COMPAT
+#elif DISPATCH_LINUX_COMPAT
 	dispatch_once_f(&_dispatch_main_q_eventfd_pred, NULL,
 			_dispatch_main_q_eventfd_init);
 	int fd = main_q_eventfd;
